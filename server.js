@@ -18,11 +18,55 @@ mongoose.connect(process.env.MONGO_URI)
 
 // --- ROUTES ---
 
-// 1. Trigger Google Login
-app.get('/auth/google', passport.authenticate('google', {
-  session: false,
-  scope: ['profile', 'email']
-}));
+const { OAuth2Client } = require('google-auth-library');
+// Use the Web Client ID from your .env
+const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const User = require('./models/User');
+
+app.get('/auth/google', async (req, res) => {
+  const { idToken } = req.query;
+
+  if (!idToken) {
+    return res.status(401).json({ error: 'No token provided' });
+  }
+
+  try {
+    // Verify the token with Google's servers
+    const ticket = await client.verifyIdToken({
+      idToken: idToken,
+      audience: process.env.GOOGLE_CLIENT_ID, // CRITICAL: Must match your Android Client ID's audience
+    });
+    
+    const payload = ticket.getPayload();
+    const googleId = payload['sub']; // Unique ID for the user
+    const email = payload['email'];
+    const name = payload['name'];
+
+    // Find or Create user in MongoDB
+    let user = await User.findOne({ googleId: googleId });
+    if (!user) {
+      user = new User({
+        googleId: googleId,
+        username: name,
+        email: email
+      });
+      await user.save();
+    }
+
+    // Generate YOUR backend's JWT for the app to use
+    const token = jwt.sign(
+      { id: user._id, username: user.username },
+      process.env.JWT_SECRET,
+      { expiresIn: '48h' }
+    );
+
+    res.json({ token: token });
+
+  } catch (error) {
+    console.error("Token verification failed:", error);
+    res.status(401).json({ error: 'Invalid Google Token' });
+  }
+});
 
 // 2. Google Callback
 app.get('/auth/google/callback', 
